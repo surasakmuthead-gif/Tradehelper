@@ -1,0 +1,134 @@
+//@version=5
+// =============================================================================
+//  XAUUSD H4 Structural Trend Rider  —  BACKTEST STRATEGY
+// -----------------------------------------------------------------------------
+//  Backtest twin of the "XAUUSD H4 Structural Trend Rider" indicator.
+//  Same entry/risk logic, wired into strategy.* so TradingView can report
+//  Win Rate, Profit Factor, Net Profit, Max Drawdown, etc.
+//
+//  Logic:
+//    - Macro Filter     : EMA 200  -> dominant trend
+//    - Structure Break  : Donchian(20) -> 20-bar (80h) high/low breakout
+//    - Volatility Meter  : ATR(14) -> fixed SL / TP sizing
+//
+//  Entry:
+//    BUY  = close crosses ABOVE Donchian upper band  AND  close > EMA200
+//    SELL = close crosses BELOW Donchian lower band  AND  close < EMA200
+//
+//  Risk (Fixed, R:R = 1 : 2.0):
+//    SL = 2.5 * ATR  |  TP = 5.0 * ATR   (from entry close)
+//
+//  Cooldown: 6 bars (24h) between fresh entries.
+// =============================================================================
+strategy("XAUUSD H4 Trend Rider [Strategy]", shorttitle="XAU H4 Rider ST", overlay=true,
+     initial_capital       = 10000,
+     default_qty_type      = strategy.percent_of_equity,
+     default_qty_value     = 100,
+     pyramiding            = 0,
+     commission_type       = strategy.commission.cash_per_order,
+     commission_value      = 5.0,
+     slippage              = 10,
+     calc_on_every_tick    = false,
+     process_orders_on_close = true,
+     max_lines_count       = 500,
+     max_labels_count      = 500)
+
+// -----------------------------------------------------------------------------
+//  1. USER INPUTS
+// -----------------------------------------------------------------------------
+grpCore   = "Core Settings"
+donLen    = input.int(20,  "Donchian Length",   minval=1, group=grpCore, tooltip="Lookback (bars) for structure break. 20 bars ≈ 80h on H4.")
+emaLen    = input.int(200, "EMA Length (Macro)", minval=1, group=grpCore, tooltip="Macro trend filter. Longs only above, shorts only below.")
+atrLen    = input.int(14,  "ATR Length",         minval=1, group=grpCore, tooltip="Volatility period used to size SL/TP.")
+
+grpRisk   = "Risk Management"
+slMult    = input.float(2.5, "SL Multiplier (x ATR)", minval=0.1, step=0.1, group=grpRisk, tooltip="Stop distance = this × ATR from entry close.")
+tpMult    = input.float(5.0, "TP Multiplier (x ATR)", minval=0.1, step=0.1, group=grpRisk, tooltip="Target distance = this × ATR from entry close.")
+cooldown  = input.int(6,     "Cooldown (bars)",       minval=0,   group=grpRisk, tooltip="Minimum bars between fresh entries. 6 bars ≈ 24h on H4.")
+
+grpTrade  = "Trade Direction"
+allowLong  = input.bool(true, "Allow Long (BUY)",   group=grpTrade)
+allowShort = input.bool(true, "Allow Short (SELL)", group=grpTrade)
+closeOpp   = input.bool(true, "Close opposite position on new signal", group=grpTrade, tooltip="Flip flat before opening the opposite side.")
+
+grpDate   = "Backtest Window"
+useDateFilter = input.bool(false, "Filter by date range", group=grpDate)
+startDate = input.time(timestamp("01 Jan 2018 00:00 +0000"), "Start", group=grpDate)
+endDate   = input.time(timestamp("01 Jan 2099 00:00 +0000"), "End",   group=grpDate)
+
+grpViz    = "Visual"
+showBands = input.bool(true, "Show Donchian Bands", group=grpViz)
+
+// -----------------------------------------------------------------------------
+//  2. CORE CALCULATIONS
+// -----------------------------------------------------------------------------
+ema200    = ta.ema(close, emaLen)
+atr       = ta.atr(atrLen)
+
+// Donchian on the previous 'donLen' bars (exclude current bar) so a break is a
+// genuine breakout of established structure, not of its own high/low.
+upperBand = ta.highest(high, donLen)[1]
+lowerBand = ta.lowest(low,  donLen)[1]
+midBand   = math.avg(upperBand, lowerBand)
+
+// -----------------------------------------------------------------------------
+//  3. SIGNAL LOGIC (with cooldown)
+// -----------------------------------------------------------------------------
+var int lastSignalBar = na
+
+crossUp   = ta.crossover(close,  upperBand)
+crossDown = ta.crossunder(close, lowerBand)
+
+rawBuy    = crossUp   and close > ema200
+rawSell   = crossDown and close < ema200
+
+cooledDown = na(lastSignalBar) or (bar_index - lastSignalBar) >= cooldown
+
+inWindow   = not useDateFilter or (time >= startDate and time <= endDate)
+
+buySignal  = rawBuy  and cooledDown and allowLong  and inWindow
+sellSignal = rawSell and cooledDown and allowShort and inWindow
+
+if buySignal or sellSignal
+    lastSignalBar := bar_index
+
+// -----------------------------------------------------------------------------
+//  4. RISK LEVELS (Fixed, snapshot at signal bar)
+// -----------------------------------------------------------------------------
+entryPrice = close
+buySL      = entryPrice - slMult * atr
+buyTP      = entryPrice + tpMult * atr
+sellSL     = entryPrice + slMult * atr
+sellTP     = entryPrice - tpMult * atr
+
+// -----------------------------------------------------------------------------
+//  5. STRATEGY EXECUTION
+// -----------------------------------------------------------------------------
+if buySignal
+    if closeOpp
+        strategy.close("SELL", comment="Flip->Long")
+    strategy.entry("BUY", strategy.long)
+    strategy.exit("BUY-Exit", from_entry="BUY", stop=buySL, limit=buyTP, comment_loss="SL", comment_profit="TP")
+
+if sellSignal
+    if closeOpp
+        strategy.close("BUY", comment="Flip->Short")
+    strategy.entry("SELL", strategy.short)
+    strategy.exit("SELL-Exit", from_entry="SELL", stop=sellSL, limit=sellTP, comment_loss="SL", comment_profit="TP")
+
+// Flatten everything once the backtest window closes.
+if useDateFilter and time > endDate
+    strategy.close_all(comment="Window End")
+
+// -----------------------------------------------------------------------------
+//  6. PLOTS
+// -----------------------------------------------------------------------------
+plot(ema200, "EMA 200", color=color.new(color.orange, 0), linewidth=2)
+
+pUpper = plot(showBands ? upperBand : na, "Donchian Upper", color=color.new(color.gray, 40))
+pLower = plot(showBands ? lowerBand : na, "Donchian Lower", color=color.new(color.gray, 40))
+plot(showBands ? midBand : na, "Donchian Mid", color=color.new(color.gray, 70), style=plot.style_stepline)
+fill(pUpper, pLower, color=showBands ? color.new(color.gray, 92) : na, title="Donchian Fill")
+
+plotshape(buySignal,  title="BUY",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="BUY")
+plotshape(sellSignal, title="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.small, text="SELL")
