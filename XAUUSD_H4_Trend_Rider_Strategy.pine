@@ -58,6 +58,8 @@ endDate   = input.time(timestamp("01 Jan 2099 00:00 +0000"), "End",   group=grpD
 
 grpViz    = "Visual"
 showBands = input.bool(true, "Show Donchian Bands", group=grpViz)
+showDash  = input.bool(true, "Show Stats Dashboard", group=grpViz, tooltip="Live performance table on the chart (readable on mobile/iPad without the Strategy Tester panel).")
+dashPos   = input.string("Top Right", "Dashboard Position", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=grpViz)
 
 // -----------------------------------------------------------------------------
 //  2. CORE CALCULATIONS
@@ -132,3 +134,54 @@ fill(pUpper, pLower, color=showBands ? color.new(color.gray, 92) : na, title="Do
 
 plotshape(buySignal,  title="BUY",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="BUY")
 plotshape(sellSignal, title="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.small, text="SELL")
+
+// -----------------------------------------------------------------------------
+//  7. STATS DASHBOARD  (readable on iPad without the Strategy Tester panel)
+// -----------------------------------------------------------------------------
+f_dashPos() =>
+    switch dashPos
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+
+var table dash = na
+if showDash
+    if na(dash)
+        dash := table.new(f_dashPos(), 2, 8, border_width=1, border_color=color.new(color.gray, 50))
+
+    if barstate.islast
+        // --- Derived metrics ---
+        closed    = strategy.closedtrades
+        netPct    = strategy.initial_capital > 0 ? strategy.netprofit / strategy.initial_capital * 100 : 0.0
+        winRate   = closed > 0 ? strategy.wintrades / closed * 100 : 0.0
+        pf        = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : na
+        maxDDpct  = strategy.initial_capital > 0 ? strategy.max_drawdown / strategy.initial_capital * 100 : 0.0
+        avgWin    = strategy.wintrades  > 0 ? strategy.grossprofit / strategy.wintrades  : 0.0
+        avgLoss   = strategy.losstrades > 0 ? strategy.grossloss   / strategy.losstrades : 0.0
+        realRR    = avgLoss > 0 ? avgWin / avgLoss : na
+        // Break-even win rate implied by the realised reward:risk
+        beWR      = na(realRR) ? na : 100.0 / (1.0 + realRR)
+
+        posCol    = color.new(color.green, 15)
+        negCol    = color.new(color.red,   15)
+        netCol    = netPct >= 0 ? posCol : negCol
+        pfCol     = na(pf) ? color.new(color.gray, 15) : (pf >= 1 ? posCol : negCol)
+        wrCol     = na(beWR) ? color.new(color.gray, 15) : (winRate >= beWR ? posCol : negCol)
+        hdrCol    = color.new(color.blue, 10)
+        txtCol    = color.white
+
+        f_row(_i, _k, _v, _bg) =>
+            table.cell(dash, 0, _i, _k, text_color=txtCol, text_size=size.small, bgcolor=color.new(color.gray, 85), text_halign=text.align_left)
+            table.cell(dash, 1, _i, _v, text_color=txtCol, text_size=size.small, bgcolor=_bg,                        text_halign=text.align_right)
+
+        table.cell(dash, 0, 0, "XAU H4 Rider", text_color=txtCol, text_size=size.normal, bgcolor=hdrCol)
+        table.cell(dash, 1, 0, "Backtest",     text_color=txtCol, text_size=size.normal, bgcolor=hdrCol)
+
+        f_row(1, "Net Profit",  str.tostring(netPct, "#.##") + " %",   netCol)
+        f_row(2, "Trades",      str.tostring(closed),                  color.new(color.gray, 85))
+        f_row(3, "Win Rate",    str.tostring(winRate, "#.##") + " %",  wrCol)
+        f_row(4, "Profit Factor", na(pf) ? "-" : str.tostring(pf, "#.##"), pfCol)
+        f_row(5, "Max DD",      str.tostring(maxDDpct, "#.##") + " %",  negCol)
+        f_row(6, "Real R:R",    na(realRR) ? "-" : "1 : " + str.tostring(realRR, "#.##"), color.new(color.gray, 85))
+        f_row(7, "B/E Win%",    na(beWR) ? "-" : str.tostring(beWR, "#.##") + " %", color.new(color.gray, 85))
